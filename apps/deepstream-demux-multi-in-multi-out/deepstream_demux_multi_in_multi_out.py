@@ -38,7 +38,7 @@ from common.FPS import PERF_DATA
 
 import pyds
 
-no_display = False
+no_display = True
 silent = False
 file_loop = False
 perf_data = None
@@ -62,12 +62,12 @@ pgie_classes_str = ["Vehicle", "TwoWheeler", "Person", "RoadSign"]
 def pgie_src_pad_buffer_probe(pad, info, u_data):
     """
     The function pgie_src_pad_buffer_probe() is a callback function that is called every time a buffer
-    is received on the source pad of the pgie element. 
+    is received on the source pad of the pgie element.
     The function calculate the batch metadata from the buffer and iterates through the list of frame
-    metadata in the batch. 
+    metadata in the batch.
     For each frame, it iterates through the list of object metadata and prints the frame number, number
     of objects detected, and the number of vehicles, persons, bicycles, and road signs detected in the
-    frame. 
+    frame.
     The function also retrieves the frame rate of the stream from the frame metadata
     :param pad: The pad on which the probe is attached
     :param info: The Gst.PadProbeInfo object that contains the buffer
@@ -141,11 +141,11 @@ def pgie_src_pad_buffer_probe(pad, info, u_data):
 
 def cb_newpad(decodebin, decoder_src_pad, data):
     """
-    The function is called when a new pad is created by the decodebin. 
-    The function checks if the new pad is for video and not audio. 
-    If the new pad is for video, the function checks if the pad caps contain NVMM memory features. 
+    The function is called when a new pad is created by the decodebin.
+    The function checks if the new pad is for video and not audio.
+    If the new pad is for video, the function checks if the pad caps contain NVMM memory features.
     If the pad caps contain NVMM memory features, the function links the decodebin pad to the source bin
-    ghost pad. 
+    ghost pad.
     If the pad caps do not contain NVMM memory features, the function prints an error message.
     :param decodebin: The decodebin element that is creating the new pad
     :param decoder_src_pad: The source pad created by the decodebin element
@@ -182,7 +182,7 @@ def decodebin_child_added(child_proxy, Object, name, user_data):
     """
     If the child added to the decodebin is another decodebin, connect to its child-added signal. If the
     child added is a source, set its drop-on-latency property to True.
-    
+
     :param child_proxy: The child element that was added to the decodebin
     :param Object: The object that emitted the signal
     :param name: The name of the element that was added
@@ -202,7 +202,7 @@ def create_source_bin(index, uri):
     """
     It creates a GstBin, adds a uridecodebin to it, and connects the uridecodebin's pad-added signal to
     a callback function
-    
+
     :param index: The index of the source bin
     :param uri: The URI of the video file to be played
     :return: A bin with a uri decode bin and a ghost pad.
@@ -322,41 +322,48 @@ def main(args, requested_pgie=None, config=None, disable_probe=False):
     streammux.set_property("height", 540)
     streammux.set_property("batch-size", number_sources)
     streammux.set_property("batched-push-timeout", 4000000)
-    pgie.set_property("config-file-path", "ds_demux_pgie_config.txt")
-    pgie_batch_size = pgie.get_property("batch-size")
-    if pgie_batch_size != number_sources:
-        print(
-            "WARNING: Overriding infer-config batch-size",
-            pgie_batch_size,
-            " with number of sources ",
-            number_sources,
-            " \n",
-        )
-        pgie.set_property("batch-size", number_sources)
+    # pgie.set_property("config-file-path", "ds_demux_pgie_config.txt")
+    # pgie_batch_size = pgie.get_property("batch-size")
+    # if pgie_batch_size != number_sources:
+    #     print(
+    #         "WARNING: Overriding infer-config batch-size",
+    #         pgie_batch_size,
+    #         " with number of sources ",
+    #         number_sources,
+    #         " \n",
+    #     )
+    #     pgie.set_property("batch-size", number_sources)
 
     print("Adding elements to Pipeline \n")
-    pipeline.add(pgie)
+    # pipeline.add(pgie)
     pipeline.add(nvstreamdemux)
 
     # linking
     streammux.link(queue1)
-    queue1.link(pgie)
-    pgie.link(nvstreamdemux)
+    # queue1.link(pgie)
+    queue1.link(nvstreamdemux)
+    # pgie.link(nvstreamdemux)
     ##creating demux src
 
     for i in range(number_sources):
         # pipeline nvstreamdemux -> queue -> nvvidconv -> nvosd -> (if Jetson) nvegltransform -> nveglgl
         # Creating EGLsink
-        if is_aarch64():
-            print("Creating nv3dsink \n")
-            sink = make_element("nv3dsink", i)
-            if not sink:
-                sys.stderr.write(" Unable to create nv3dsink \n")
+        if no_display:
+            print("Creating Fakesink \n")
+            sink = make_element("fakesink", i)
+            sink.set_property('enable-last-sample', 0)
+            sink.set_property('sync', 0)
         else:
-            print("Creating EGLSink \n")
-            sink = make_element("nveglglessink", i)
-            if not sink:
-                sys.stderr.write(" Unable to create egl sink \n")
+            if is_aarch64():
+                print("Creating nv3dsink \n")
+                sink = make_element("nv3dsink", i)
+                if not sink:
+                    sys.stderr.write(" Unable to create nv3dsink \n")
+            else:
+                print("Creating EGLSink \n")
+                sink = make_element("nveglglessink", i)
+                if not sink:
+                    sys.stderr.write(" Unable to create egl sink \n")
         pipeline.add(sink)
 
         # creating queue
@@ -370,8 +377,8 @@ def main(args, requested_pgie=None, config=None, disable_probe=False):
         # creating nvosd
         nvdsosd = make_element("nvdsosd", i)
         pipeline.add(nvdsosd)
-        nvdsosd.set_property("process-mode", OSD_PROCESS_MODE)
-        nvdsosd.set_property("display-text", OSD_DISPLAY_TEXT)
+        # nvdsosd.set_property("process-mode", OSD_PROCESS_MODE)
+        # nvdsosd.set_property("display-text", OSD_DISPLAY_TEXT)
 
         # connect nvstreamdemux -> queue
         padname = "src_%u" % i
@@ -383,7 +390,6 @@ def main(args, requested_pgie=None, config=None, disable_probe=False):
         if not queuesinkpad:
             sys.stderr.write("Unable to create queue sink pad \n")
         demuxsrcpad.link(queuesinkpad)
-
 
         # connect  queue -> nvvidconv -> nvosd -> nveglgl
         queue.link(nvvideoconvert)
@@ -398,13 +404,13 @@ def main(args, requested_pgie=None, config=None, disable_probe=False):
     bus = pipeline.get_bus()
     bus.add_signal_watch()
     bus.connect("message", bus_call, loop)
-    pgie_src_pad = pgie.get_static_pad("src")
-    if not pgie_src_pad:
-        sys.stderr.write(" Unable to get src pad \n")
-    else:
-        pgie_src_pad.add_probe(Gst.PadProbeType.BUFFER, pgie_src_pad_buffer_probe, 0)
-        # perf callback function to print fps every 5 sec
-        GLib.timeout_add(5000, perf_data.perf_print_callback)
+    # pgie_src_pad = pgie.get_static_pad("src")
+    # if not pgie_src_pad:
+    #     sys.stderr.write(" Unable to get src pad \n")
+    # else:
+    #     pgie_src_pad.add_probe(Gst.PadProbeType.BUFFER, pgie_src_pad_buffer_probe, 0)
+    #     # perf callback function to print fps every 5 sec
+    #     GLib.timeout_add(5000, perf_data.perf_print_callback)
 
     # List the sources
     print("Now playing...")
@@ -425,9 +431,11 @@ def main(args, requested_pgie=None, config=None, disable_probe=False):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(prog="deepstream_demux_multi_in_multi_out.py", 
-        description="deepstream-demux-multi-in-multi-out takes multiple URI streams as input" \
-            "and uses `nvstreamdemux` to split batches and output separate buffer/streams")
+    parser = argparse.ArgumentParser(
+        prog="deepstream_demux_multi_in_multi_out.py",
+        description="deepstream-demux-multi-in-multi-out takes multiple URI streams as input"
+        "and uses `nvstreamdemux` to split batches and output separate buffer/streams",
+    )
     parser.add_argument(
         "-i",
         "--input",

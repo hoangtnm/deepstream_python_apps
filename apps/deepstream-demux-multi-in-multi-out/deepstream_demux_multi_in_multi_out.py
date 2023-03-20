@@ -24,8 +24,7 @@ import configparser
 import argparse
 
 gi.require_version("Gst", "1.0")
-from gi.repository import Gst
-from gi.repository import GLib
+from gi.repository import Gst, GLib, GstRtspServer
 from ctypes import *
 import time
 import sys
@@ -42,6 +41,8 @@ no_display = True
 silent = False
 file_loop = False
 perf_data = None
+updsink_port_num = 5400
+rtsp_codec = "H264"
 
 MAX_DISPLAY_LEN = 64
 PGIE_CLASS_ID_VEHICLE = 0
@@ -348,23 +349,61 @@ def main(args, requested_pgie=None, config=None, disable_probe=False):
     for i in range(number_sources):
         # pipeline nvstreamdemux -> queue -> nvvidconv -> nvosd -> (if Jetson) nvegltransform -> nveglgl
         # Creating EGLsink
-        if no_display:
-            print("Creating Fakesink \n")
-            sink = make_element("fakesink", i)
-            sink.set_property('enable-last-sample', 0)
-            sink.set_property('sync', 0)
-        else:
-            if is_aarch64():
-                print("Creating nv3dsink \n")
-                sink = make_element("nv3dsink", i)
-                if not sink:
-                    sys.stderr.write(" Unable to create nv3dsink \n")
-            else:
-                print("Creating EGLSink \n")
-                sink = make_element("nveglglessink", i)
-                if not sink:
-                    sys.stderr.write(" Unable to create egl sink \n")
-        pipeline.add(sink)
+
+        # if no_display:
+        # print("Creating Fakesink \n")
+        # sink = make_element("fakesink", i)
+        # sink.set_property("enable-last-sample", 0)
+        # sink.set_property("sync", 0)
+        sink_bin = Gst.Bin.new(f"rtsp-sink-bin-{i:02d}")
+        nvvidconv_postosd = make_element("nvvideoconvert", f"nvvidconv_postosd-{i}")
+        caps = make_element("capsfilter", i)
+        caps.set_property("caps", Gst.Caps.from_string("video/x-raw(memory:NVMM), format=I420"))
+
+        encoder = make_element(f"nvv4l2{rtsp_codec.lower()}enc", i)
+        encoder.set_property("bitrate", 4000000)
+        if is_aarch64():
+            encoder.set_property("preset-level", 1)
+            encoder.set_property("insert-sps-pps", 1)
+            encoder.set_property("bufapi-version", 1)
+
+        # Make the payload-encode video into RTP packets
+        rtppay = make_element(f"rtp{rtsp_codec.lower()}pay", i)
+
+        # Make the UDP sink
+        updsink_port_num = 5400 + i
+        sink = make_element("udpsink", i)
+        sink.set_property("host", "224.224.255.255")
+        sink.set_property("port", updsink_port_num)
+        sink.set_property("async", False)
+        sink.set_property("sync", 1)
+
+        sink_bin.add(nvvidconv_postosd)
+        sink_bin.add(caps)
+        sink_bin.add(encoder)
+        sink_bin.add(rtppay)
+        sink_bin.add(sink)
+
+        sink_bin.add_pad(Gst.GhostPad("sink", nvvidconv_postosd.get_static_pad("sink")))
+        nvvidconv_postosd.link(caps)
+        caps.link(encoder)
+        encoder.link(rtppay)
+        rtppay.link(sink)
+
+        pipeline.add(sink_bin)
+
+        # else:
+        #     if is_aarch64():
+        #         print("Creating nv3dsink \n")
+        #         sink = make_element("nv3dsink", i)
+        #         if not sink:
+        #             sys.stderr.write(" Unable to create nv3dsink \n")
+        #     else:
+        #         print("Creating EGLSink \n")
+        #         sink = make_element("nveglglessink", i)
+        #         if not sink:
+        #             sys.stderr.write(" Unable to create egl sink \n")
+        # pipeline.add(sink)
 
         # creating queue
         queue = make_element("queue", i)
@@ -394,9 +433,10 @@ def main(args, requested_pgie=None, config=None, disable_probe=False):
         # connect  queue -> nvvidconv -> nvosd -> nveglgl
         queue.link(nvvideoconvert)
         nvvideoconvert.link(nvdsosd)
-        nvdsosd.link(sink)
+        # nvdsosd.link(sink)
+        nvdsosd.link(sink_bin)
 
-        sink.set_property("qos", 0)
+        # sink.set_property("qos", 0)
 
     print("Linking elements in the Pipeline \n")
     # create an event loop and feed gstreamer bus mesages to it
@@ -416,6 +456,23 @@ def main(args, requested_pgie=None, config=None, disable_probe=False):
     print("Now playing...")
     for i, source in enumerate(input_sources):
         print(i, ": ", source)
+
+        rtsp_port_num = 8554 + i
+        server = GstRtspServer.RTSPServer.new()
+        server.props.service = f"{rtsp_port_num}"
+        server.attach(None)
+
+        factory = GstRtspServer.RTSPMediaFactory.new()
+        factory.set_launch(
+            '( udpsrc name=pay0 port={} buffer-size=524288 caps="application/x-rtp, media=video, clock-rate=90000, encoding-name=(string){}, payload=96 " )'.format(
+                updsink_port_num + i, rtsp_codec
+            )
+        )
+        factory.set_shared(True)
+        server.get_mount_points().add_factory("/ds-test", factory)
+        print(
+            f"*** DeepStream: Launched RTSP Streaming at rtsp://localhost:{rtsp_port_num}/ds-test***"
+        )
 
     print("Starting pipeline \n")
     # start play back and listed to events
